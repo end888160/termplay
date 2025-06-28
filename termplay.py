@@ -313,7 +313,10 @@ def dither_image(
 
         # Scale to larger matrices as needed
         if dither_levels > 2:
-            pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
+            bayer4x4 = [
+                [(val * (dither_levels // 2)) for val in row] for row in bayer4x4
+            ]
+        pattern = bayer4x4
     elif dither_diffusion == 'sierra':
         # Sierra dithering pattern
         pattern = [
@@ -429,12 +432,12 @@ def render_braille(img, dither=False):
 
 
 def extract_audio(video_path):
-    temp_audio = tempfile.NamedTemporaryFile(delete=True, suffix=".wav")
+    temp_audio = tempfile.NamedTemporaryFile(delete=True, suffix=".ogg")
     audio_path = temp_audio.name
     temp_audio.close()
     subprocess.run([
         "ffmpeg", "-y", "-i", video_path,
-        "-vn", "-acodec", "pcm_u8", "-ar", "24000", "-ac", "1",
+        "-vn", "-acodec", "libvorbis", "-ar", "24000", "-ac", "1",
         "-loglevel", "quiet", # suppress output
         audio_path
     ], check=True)
@@ -528,12 +531,14 @@ def render_frame(
 
     """ Render a single frame of an image in the specified mode. """
     if dither:
-        if mode in {"ascii", "gray", "grey"}:
-            img = dither_image(img, dither_levels=4, dither_diffusion=args.dither_method, dither_mode='gray')
+        if mode in {"gray", "grey"}:
+            img = dither_image(img, dither_levels=4, dither_diffusion=dither_diffusion, dither_mode='gray')
+        elif mode == "ascii":
+            img = dither_image(img, dither_levels=len(ASCII_CHARS), dither_diffusion=dither_diffusion, dither_mode='gray')
         elif mode in {"color", "256", "16", "8"}:
-            img = dither_image(img, dither_levels=8, dither_diffusion=args.dither_method, dither_mode='rgb')
+            img = dither_image(img, dither_levels=8, dither_diffusion=dither_diffusion, dither_mode='rgb')
         elif mode == "bw" or mode == "braille":
-            img = dither_image(img, dither_levels=2, dither_diffusion=args.dither_method, dither_mode='gray')
+            img = dither_image(img, dither_levels=2, dither_diffusion=dither_diffusion, dither_mode='gray')
 
     elif mode == "half":
         return render_half_block(img)
@@ -676,6 +681,9 @@ def play_video(
     audio_paused_at = 0.0
     is_audio_paused = False
     volume = 1.0  # max
+    pause_start_time = None
+    total_pause_time = 0
+    mute = False
 
 
 
@@ -769,24 +777,31 @@ def play_video(
             global key_pressed
             if key_pressed:
                 seek_offset = 10  # seconds
-                if key_pressed == ' ':
-                    paused = not paused
-                    if audio:
-                        if paused:
+                if key_pressed == ' ':                            
+                    if not paused:
+                        paused = True
+                        pause_start_time = time.time()
+                        if audio:
                             stop_audio()
+                    elif paused:
+                        paused = False
+                        total_pause_time += time.time() - pause_start_time
+                        start_time += time.time() - pause_start_time
 
                 elif key_pressed == '\x1b':  # ESC or arrow sequence
                     seq = sys.stdin.read(2)
                     if seq == '[A':  # ↑
-                        volume = min(1.0, volume + 0.1)
-                        if audio:
-                            pygame.mixer.music.set_volume(volume)
-                        print(f"\rVolume: {volume:.1f}", end='', flush=True)
+                        if not mute:
+                            volume = min(1.0, volume + 0.1)
+                            if audio:
+                                pygame.mixer.music.set_volume(volume)
+                            print(f"\rVolume: {volume:.1f}", end='', flush=True)
                     elif seq == '[B':  # ↓
-                        volume = max(0.0, volume - 0.1)
-                        if audio:
-                            pygame.mixer.music.set_volume(volume)
-                        print(f"\rVolume: {volume:.1f}", end='', flush=True)
+                        if not mute:
+                            volume = max(0.0, volume - 0.1)
+                            if audio:
+                                pygame.mixer.music.set_volume(volume)
+                            print(f"\rVolume: {volume:.1f}", end='', flush=True)
                     elif seq == '[D':  # ← left
                         frame_index = max(0, frame_index - int(seek_offset * input_fps))
                     elif seq == '[C':  # → right
@@ -799,7 +814,6 @@ def play_video(
 
                     # Restart/resync audio
                     if audio:
-                        stop_audio()
                         play_audio(start_sec=frame_index / input_fps)
 
                     # Clear terminal to avoid stuck frame
@@ -845,15 +859,78 @@ def play_video(
                         if audio:
                             stop_audio()
                             play_audio(start_sec=frame_index / input_fps)
-
                     except ValueError:
                         print("Invalid input. Please enter a valid number.")
 
                     finally:
                         # Re-enter raw mode for key presses
                         tty.setcbreak(sys.stdin.fileno())
-
-
+                elif key_pressed == 'p':
+                    # Toggle progress bar
+                    no_progress = not no_progress
+                    if no_progress:
+                        progress.close()
+                    else:
+                        progress = tqdm(total=duration, initial=current_time, desc=f"📽 Rendering... [⏱ {format_time(current_time)}/{format_time(duration)}] {bitrate_str}ps")
+                elif key_pressed == 'u':
+                    # Toggle cursor
+                    no_cursor = not no_cursor
+                elif key_pressed == 'c':
+                    # Toggle terminal colors
+                    if mode == 'color':
+                        mode = 'grey'
+                    elif mode == 'grey':
+                        mode = '256'
+                    elif mode == '256':
+                        mode = '16'
+                    elif mode == '16':
+                        mode = '8'
+                    elif mode == '8':
+                        mode = 'bw'
+                    elif mode == 'bw':
+                        mode = 'ascii'
+                    elif mode == 'ascii':
+                        mode = 'braille'
+                    elif mode == 'braille':
+                        mode = 'half'
+                    elif mode == 'half':
+                        mode = 'color'
+                
+                elif key_pressed == 'd':
+                    # Toggle dithering
+                    dither = not dither
+                elif key_pressed == 'e':
+                    # Toggle dither mode
+                    if dither_diffusion == 'none':
+                        dither_diffusion = 'floyd'
+                    elif dither_diffusion == 'floyd':
+                        dither_diffusion = 'atkinson'
+                    elif dither_diffusion == 'atkinson':
+                        dither_diffusion = 'bayer'
+                    elif dither_diffusion == 'bayer':
+                        dither_diffusion = 'bayer4x4'
+                    elif dither_diffusion == 'bayer4x4':
+                        dither_diffusion = 'stucki'
+                    elif dither_diffusion == 'stucki':
+                        dither_diffusion = 'jarvis'
+                    elif dither_diffusion == 'jarvis':
+                        dither_diffusion = 'sierra'
+                    elif dither_diffusion == 'sierra':
+                        dither_diffusion = 'random'
+                    elif dither_diffusion == 'random':
+                        dither_diffusion = 'none'
+                elif key_pressed == 'm':
+                    # Toggle Mute
+                    
+                    if not mute:
+                        # Get current volume
+                        before_mute = pygame.mixer.music.set_volume(volume)
+                        mute = True
+                    else:
+                        # Restore volume
+                        pygame.mixer.music.set_volume(before_mute)
+                        mute = False
+                    
 
                 key_pressed = None
 
@@ -875,6 +952,7 @@ def play_video(
 
             # Terminal title
             current_time = frame_index / input_fps
+        
             console_title(f"▶ [{current_time:.2f}s] {video_name}")
             duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / input_fps
 
@@ -905,7 +983,7 @@ def play_video(
                 img, 
                 mode=mode, 
                 char=char, 
-                dither=args.dither, 
+                dither=dither,
                 legacy=args.legacy,
                 dither_levels=dither_levels,
                 dither_diffusion=dither_diffusion,
@@ -916,9 +994,9 @@ def play_video(
             if subtitle:
                 subtitle_text = get_subtitle_at(subtitles, current_time)
                 if subtitle_text:
-                    frame_text += render_subtitle_line(subtitle_text, width or term_width, ascii=mode=="ascii") + "\x1b[0m\n"
+                    frame_text += render_subtitle_line(subtitle_text, term_width, ascii=mode=="ascii") + "\x1b[0m\n"
                 else:
-                    frame_text += "" + render_subtitle_line(" ", width or term_width, ascii=mode=="ascii") + "\n"
+                    frame_text += "" + render_subtitle_line(" ", term_width, ascii=mode=="ascii") + "\n"
 
 
             # Get frame bytes
@@ -1025,11 +1103,17 @@ CONTROLS:
   [RIGHT] Seek 10s right
   [UP]    Volume up
   [DOWN]  Volume down
-  [R]     Reset video playback
   [SPACE] Pause/Resume
-  [Q]     Exit
   [B]     Toggle bitrate display (🔌 uncompressed / 📡 compressed)
+  [C]     Cycle color mode
+  [D]     Toggle dither
+  [E]     Cycle dither mode
   [G]     Go to time
+  [P]     Toggle progress bar
+  [Q]     Exit
+  [R]     Reset video playback
+  [U]     Toggle cursor
+
 """
 ,
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1038,7 +1122,7 @@ CONTROLS:
     parser.add_argument("-w", "--width", type=int, help="Max terminal width in characters")
     parser.add_argument("-r", "--ratio", type=float, default=0.5, help="Character height ratio (default=0.5)")
     parser.add_argument("-c", "--char", default=BLOCK_CHAR, type=str, help="Character to use for rendering (default=█)")
-    parser.add_argument("-m", "--mode", choices=["color", "gray", "ascii", "256", "16", "8", "bw", "braille", "half", "grey", "gray"], default="color",
+    parser.add_argument("-m", "--mode", choices=["color", "gray", "ascii", "256", "16", "8", "bw", "braille", "half", "grey"], default="color",
                     help="Rendering mode: color, gray, ascii, 256, 16, bw, braille, half")
     parser.add_argument("-d", "--dither", action="store_true", help="Enable dithering (for ascii, gray, bw, braille modes)")
     parser.add_argument("-nc", "--no-cursor", action="store_true", help="Hide cursor during playback")
