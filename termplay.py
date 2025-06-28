@@ -79,7 +79,13 @@ RESAMPLING_MAP = {
 ASCII_CHARS = "@%#*+=-:. "
 BLOCK_CHAR = '█'
 
-def naturalsize_bits(bits, precision: int = 2, binary: bool = False, gnu: bool = False, format = None) -> str:
+def naturalsize_bits(
+        bits, 
+        precision: int = 2, 
+        binary: bool = False, 
+        gnu: bool = False, 
+        format = None
+    ) -> str:
 	"""
 	Converts a given number of bits into a human-readable string with appropriate units.
 
@@ -454,7 +460,14 @@ def get_audio_pos():
 
 
 
-def resize_frame(frame, width=None, height_ratio=0.5, double_row=False, resample=Image.BICUBIC):
+def resize_frame(
+        frame, 
+        width=None, 
+        height_ratio=0.5, 
+        double_row=False, 
+        mode="color", 
+        resample=Image.BICUBIC
+    ):
     """ Resize a frame to fit terminal width, maintaining aspect ratio."""
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pil = Image.fromarray(frame)
@@ -465,8 +478,17 @@ def resize_frame(frame, width=None, height_ratio=0.5, double_row=False, resample
     w = width or term_width
     w = max(20, min(w, term_width - 1))  # clamp width between 20 and usable terminal width
 
-    ratio = height_ratio * (2.0 if double_row else 1.0)
-    h = int(pil.height * (w / pil.width) * ratio)
+    # adjust ratio by actual terminal cell ratio
+    if mode == "half":
+        cell_aspect = 0.825  # each cell is 2 pixels high
+    elif mode == "braille":
+        cell_aspect = 1.25 # each cell encodes 4 pixels vertically
+    else:
+        cell_aspect = 0.4125 # typical text mode
+
+    # preserve video aspect ratio corrected by terminal cell aspect
+    h = int((pil.height / pil.width) * w * cell_aspect)
+
 
     if double_row and h % 2 != 0:
         h += 1  # make sure height is even for clean top/bottom split
@@ -512,16 +534,52 @@ def render_frame(
         return render_half_block(img)
     if dither:
         if mode in {"gray", "grey"}:
-            img = dither_image(img, dither_levels=4, dither_diffusion=dither_diffusion, dither_mode='gray')
+            img = dither_image(
+                img, 
+                dither_levels=4, 
+                dither_diffusion=dither_diffusion, 
+                dither_mode='gray'
+            )
         elif mode == "ascii":
-            img = dither_image(img, dither_levels=len(ASCII_CHARS), dither_diffusion=dither_diffusion, dither_mode='gray')
+            img = dither_image(
+                img, 
+                dither_levels=len(ASCII_CHARS), 
+                dither_diffusion=dither_diffusion, 
+                dither_mode='gray'
+            )
         elif mode in {"color", "half", "256", "16", "8"}:
-            img = dither_image(img, dither_levels=8, dither_diffusion=dither_diffusion, dither_mode='rgb')
-        elif mode in {"bw", "braille"}:
-            img = dither_image(img, dither_levels=2, dither_diffusion=dither_diffusion, dither_mode='gray')
+            img = dither_image(
+                img, 
+                dither_levels=8, 
+                dither_diffusion=dither_diffusion, 
+                dither_mode='rgb'
+            )
+        elif mode in {"bw", "2", "braille"}:
+            img = dither_image(
+                img, 
+                dither_levels=2, 
+                dither_diffusion=dither_diffusion, 
+                dither_mode='gray'
+            )
 
 
     lines = []
+    if mode == "braille":
+        for y in range(0, img.height, 4):
+            line = ''
+            for x in range(0, img.width, 2):
+                block = [(0,0,0)] * 8
+                i = 0
+                for dy in range(4):
+                    for dx in range(2):
+                        px, py = x + dx, y + dy
+                        if px < img.width and py < img.height:
+                            block[i] = img.getpixel((px, py))
+                        i += 1
+                line += rgb_to_braille_block(block)
+            lines.append(line)
+        return "\n".join(lines)
+
     for y in range(img.height):
         line = ''
         for x in range(img.width):
@@ -531,7 +589,7 @@ def render_frame(
             elif mode == "gray":
                 gval = int((r + g + b) / 3)
                 line += f"\x1b[38;2;{gval};{gval};{gval}m{char}\x1b[0m"
-            elif mode == "bw":
+            elif mode in {"bw", "2"}:
                 line += rgb_to_bw(r, g, b, char)
             elif mode == "braille":
                 block = []
@@ -649,6 +707,7 @@ def play_video(
         subtitle=None,
         dither_diffusion="floyd",
         subtitle_lines=1,
+        seek_offset=10
 
     ):
     """ Play a video in the terminal with various rendering modes. """
@@ -673,8 +732,6 @@ def play_video(
     pause_start_time = None
     total_pause_time = 0
     mute = False
-
-
 
     # Get video properties
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -719,7 +776,15 @@ def play_video(
 
     # Progress bar
     if not no_progress:
-        progress = tqdm(total=total, desc="📽 Rendering", unit="f", dynamic_ncols=True, position=0, ascii=(mode in {"ascii", "braille"}), leave=True)
+        progress = tqdm(
+            total=total, 
+            desc="📽 Rendering", 
+            unit="f", 
+            dynamic_ncols=True, 
+            position=0, 
+            ascii=(mode in {"ascii", "braille"}), 
+            leave=True
+        )
 
     bitrate_mode = "uncompressed"
     bitrate_str = "🔌 0 b"
@@ -767,8 +832,7 @@ def play_video(
         while True:
             global key_pressed
             if key_pressed:
-                seek_offset = 10  # seconds
-                if key_pressed == ' ':                            
+                if key_pressed == ' ':
                     if not paused:
                         paused = True
                         pause_start_time = time.time()
@@ -776,18 +840,19 @@ def play_video(
                             stop_audio()
                     elif paused:
                         paused = False
-                        total_pause_time += time.time() - pause_start_time
-                        start_time += time.time() - pause_start_time
+                        start_time += time.time() - pause_start_time  # adjust clock right here
+                        if audio:
+                            play_audio(start_sec=frame_index / input_fps)
 
                 elif key_pressed == '\x1b':  # ESC or arrow sequence
                     seq = sys.stdin.read(2)
-                    if seq == '[A':  # ↑
+                    if seq == '[A':  # ↑ up
                         if not mute:
                             volume = min(1.0, volume + 0.1)
                             if audio:
                                 pygame.mixer.music.set_volume(volume)
                             print(f"\rVolume: {volume:.1f}", end='', flush=True)
-                    elif seq == '[B':  # ↓
+                    elif seq == '[B':  # ↓ down
                         if not mute:
                             volume = max(0.0, volume - 0.1)
                             if audio:
@@ -807,9 +872,9 @@ def play_video(
                     if audio:
                         play_audio(start_sec=frame_index / input_fps)
 
-                    # Clear terminal to avoid stuck frame
-                    sys.stdout.write("\x1b[2J\x1b[H")
-                    sys.stdout.flush()
+                    # Clear terminal to avoid stuck frame (Optional)
+                    # sys.stdout.write("\x1b[2J\x1b[H")
+                    # sys.stdout.flush()
                 elif key_pressed == 'q':
                     # end thread
                     print("\n⏹ Stopping...")
@@ -862,7 +927,11 @@ def play_video(
                     if no_progress:
                         progress.close()
                     else:
-                        progress = tqdm(total=duration, initial=current_time, desc=f"📽 Rendering... [⏱ {format_time(current_time)}/{format_time(duration)}] {bitrate_str}ps")
+                        progress = tqdm(
+                            total=duration, 
+                            initial=current_time, 
+                            desc=f"📽 Rendering... [⏱ {format_time(current_time)}/{format_time(duration)}] {bitrate_str}ps"
+                        )
                 elif key_pressed == 'u':
                     # Toggle cursor
                     no_cursor = not no_cursor
@@ -949,7 +1018,9 @@ def play_video(
 
             # Progress bar
             if not no_progress:
-                progress.set_description(f"📽 Rendering... [⏱ {format_time(current_time)}/{format_time(duration)}] {bitrate_str}ps")
+                progress.set_description(
+                    f"📽 Rendering... [⏱ {format_time(current_time)}/{format_time(duration)}] {bitrate_str}ps"
+                )
 
 
 
@@ -976,7 +1047,7 @@ def play_video(
             if mode == "half":
                 row_factor = 0.575
             elif mode == "braille":
-                row_factor = 0.55
+                row_factor = 0.05
             else:
                 row_factor = 0.55
 
@@ -991,6 +1062,7 @@ def play_video(
                 height_ratio=effective_ratio,
                 double_row=(mode == "half"),
                 resample=RESAMPLING_MAP[resample_filter],
+                mode=mode
             )
             # Get frame text
             frame_text = render_frame(
@@ -1005,9 +1077,19 @@ def play_video(
             if subtitle:
                 subtitle_text = get_subtitle_at(subtitles, current_time)
                 if subtitle_text:
-                    frame_text += render_subtitle_line(subtitle_text, term_width, max_lines=max_subtitle_lines, ascii=mode=="ascii") + "\x1b[0m\n"
+                    frame_text += render_subtitle_line(
+                        subtitle_text, 
+                        term_width, 
+                        max_lines=max_subtitle_lines, 
+                        ascii=mode=="ascii"
+                    ) + "\x1b[0m\n"
                 else:
-                    frame_text += "" + render_subtitle_line(" ", term_width, max_lines=max_subtitle_lines, ascii=mode=="ascii") + "\n"
+                    frame_text += "" + render_subtitle_line(
+                        " ", 
+                        term_width, 
+                        max_lines=max_subtitle_lines, 
+                        ascii=mode=="ascii"
+                        ) + "\n"
 
 
             # Get frame bytes
@@ -1032,15 +1114,19 @@ def play_video(
                 elif bitrate_mode == 'compressed':
                     progress.set_postfix({"size": humanize.naturalsize(total_compressed_bytes)})
 
-            while paused:
-                console_title(f"⏸ [{current_time:.2f}s] {video_name}")
-                time.sleep(0.1)
-                progress.set_description(f"📽 Paused... [⏱ {format_time(current_time)}/{format_time(duration)}] {bitrate_str}ps")
-                if key_pressed == ' ':
-                    if audio:
-                        play_audio(start_sec=frame_index / input_fps)
-                    paused = False
-                    key_pressed = None
+                while paused:
+                    console_title(f"⏸ [{current_time:.2f}s] {video_name}")
+                    time.sleep(0.1)
+                    progress.set_description(
+                        f"📽 Paused... [⏱ {format_time(current_time)}/{format_time(duration)}] {bitrate_str}ps"
+                    )
+                    if key_pressed == ' ':
+                        if audio:
+                            play_audio(start_sec=frame_index / input_fps)
+                        paused = False
+                        start_time += time.time() - pause_start_time  # adjust here
+                        key_pressed = None
+
 
 
             now = time.time()
@@ -1135,23 +1221,31 @@ CONTROLS:
     parser.add_argument("-w", "--width", type=int, help="Max terminal width in characters")
     parser.add_argument("-r", "--ratio", type=float, default=0.5, help="Character height ratio (default=0.5)")
     parser.add_argument("-c", "--char", default=BLOCK_CHAR, type=str, help="Character to use for rendering (default=█)")
-    parser.add_argument("-m", "--mode", choices=["color", "gray", "ascii", "256", "16", "8", "bw", "braille", "half", "grey"], default="color",
-                    help="Rendering mode: color, gray, ascii, 256, 16, bw, braille, half")
-    parser.add_argument("-d", "--dither", action="store_true", help="Enable dithering (for ascii, gray, bw, braille modes)")
+
+    parser.add_argument("-m", "--mode", 
+                    choices=["color", "gray", "ascii", "256", "16", "8", "2", "bw", "braille", "half", "grey"], default="color",
+                    help="Rendering mode - color: 24bit truecolor, half: hi-res 24bit,  256: 256 color, 16: 16 color, 8: 8 color, 2 | bw: black and white,gray: 4 color grayscale, ascii: grayscale to ASCII, braille: 2x4 braille (default: color)"
+    )
+    
+    parser.add_argument("-d", "--dither", action="store_true", help="Enable dithering (for low color modes)")
     parser.add_argument("-nc", "--no-cursor", action="store_true", help="Hide cursor during playback")
     parser.add_argument("-np", "--no-progress", action="store_true", help="Hide tqdm progress bar")
     parser.add_argument("-ac", "--ascii-chars", type=str, default=ASCII_CHARS, help="Characters to use for ascii rendering, Black to White (default: '█▓▒░ ')")
     parser.add_argument("-ra", "--reverse-ascii", action="store_true", help="Use reverse ASCII characters for rendering (default: False)")
-    parser.add_argument("-l", "--legacy", action="store_true", help="Enable compatibility mode for legacy terminals (e.g. Windows XP)")
+    parser.add_argument("-o", "--legacy", action="store_true", help="Enable compatibility mode for legacy terminals (e.g. Windows XP)")
     parser.add_argument("-sub", "--subtitle",  type=str, help="Path to subtitle file (.srt or .vtt). Useful for no audio playback scenarios like SSH.")
     parser.add_argument("-ml", "--max-subtitle-lines", type=int, default=1, help="Number of subtitle lines to display")
-    parser.add_argument("-dm", "--dither-method", choices=["floyd", "atkinson", 'bayer', 'stucki', 'jarvis', 'bayer4x4', 'sierra', 'random', "none"], default="floyd", help="Dither diffusion")
+    parser.add_argument("-dm", "--dither-method", 
+                        choices=["floyd", "atkinson", 'bayer', 'stucki', 'jarvis', 'bayer4x4', 'sierra', 'random', "none"], default="floyd", 
+                        help="Dither method to use for dithering - none | bayer | random: fastest/lowest quality, floyd: good quality/smoother, atkinson: better quality/coarse (default: floyd)")
 
     parser.add_argument("-s", "--resampling", choices=RESAMPLING_MAP.keys(), default="bicubic",
-                    help="Resampling method for image resizing (default: bicubic)")
+                    help="Resampling method for image resizing. Nearest: fastest/lowest quality, Bilinear: good quality, Bicubic: better quality/smoother, Lanczos: slowest/best quality (default: bicubic)")
     parser.add_argument("-a", "--audio", action="store_true", help="Enable audio playback using ffplay")
+
     parser.add_argument("-fps", "--fps", type=float, help="Limit FPS to specific rate")
-    parser.add_argument("--loop", action="store_true", help="Loop video")
+    parser.add_argument("-l", "--loop", action="store_true", help="Loop video")
+    parser.add_argument("--seek", type=int, default=10, help="Seek offset in seconds")
 
     args = parser.parse_args()
 
@@ -1184,7 +1278,8 @@ CONTROLS:
             no_cursor=args.no_cursor,
             subtitle=args.subtitle,
             dither_diffusion=args.dither_method, 
-            subtitle_lines=args.max_subtitle_lines
+            subtitle_lines=args.max_subtitle_lines,
+            seek_offset=args.seek
         )
         if not args.loop:
             break
