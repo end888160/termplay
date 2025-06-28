@@ -9,8 +9,8 @@ from tqdm import tqdm
 import numpy as np
 from PIL import Image
 import zlib
+import scipy.ndimag
 import random
-import scipy
 
 def image_to_array(img):
     return np.asarray(img).astype(np.float32)
@@ -352,13 +352,8 @@ def apply_dither(
             (-2,2,1/48), (-1,2,3/48), (0,2,5/48), (1,2,3/48), (2,2,1/48)
         ]
     elif dither_diffusion == 'bayer4x4':
-        bayer4x4 = [
-            [ 0/16,  8/16,  2/16, 10/16],
-            [12/16,  4/16, 14/16,  6/16],
-            [ 3/16, 11/16,  1/16,  9/16],
-            [15/16,  7/16, 13/16,  5/16],
-        ]
-
+        pattern = [(2, 0, 1/16), (3, 0, 1/16), (0, 1, 1/16), (1, 1, 1/16),
+                   (2, 2, 1/16), (3, 2, 1/16), (0, 3, 1/16), (1, 3, 1/16)]
     elif dither_diffusion == 'sierra':
         pattern = [
             (1,0,5/32),(2,0,3/32),(-2,1,2/32),(-1,1,4/32),(0,1,5/32),
@@ -375,15 +370,7 @@ def apply_dither(
             if dither_mode == 'gray':
                 r, g, b = arr[x,y]
                 old = int((r+g+b)/3)
-                if dither_diffusion == 'bayer4x4':
-                    threshold = bayer4x4[y % 4][x % 4]
-                    r, g, b = arr[x,y]
-                    old = int((r+g+b)/3)
-                    normalized = old / 255
-                    base = int((normalized + threshold / dither_levels) * dither_levels)
-                    new = max(0, min(255, base * step))
-                    arr[x,y] = (new, new, new)
-                elif dither_diffusion == 'random':
+                if dither_diffusion == 'random':
                     jitter = random.uniform(-step/2, step/2)
                     new = ((old + jitter) // step) * step
                     new = max(0, min(255, int(new)))
@@ -402,17 +389,7 @@ def apply_dither(
 
             elif dither_mode == 'rgb':
                 old_r, old_g, old_b = arr[x,y]
-                if dither_diffusion == 'bayer4x4':
-                    threshold = bayer4x4[y % 4][x % 4]
-                    old_r, old_g, old_b = arr[x,y]
-                    nr = int((old_r / 255 + threshold / dither_levels) * dither_levels)
-                    ng = int((old_g / 255 + threshold / dither_levels) * dither_levels)
-                    nb = int((old_b / 255 + threshold / dither_levels) * dither_levels)
-                    new_r = max(0, min(255, nr * step))
-                    new_g = max(0, min(255, ng * step))
-                    new_b = max(0, min(255, nb * step))
-                    arr[x,y] = (new_r, new_g, new_b)
-                elif dither_diffusion == 'random':
+                if dither_diffusion == 'random':
                     new_r = ((old_r + random.uniform(-step/2, step/2)) // step) * step
                     new_g = ((old_g + random.uniform(-step/2, step/2)) // step) * step
                     new_b = ((old_b + random.uniform(-step/2, step/2)) // step) * step

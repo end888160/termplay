@@ -720,7 +720,7 @@ def play_video(
 
     # Progress bar
     if not no_progress:
-        progress = tqdm(total=total, desc="📽 Rendering", unit="f", dynamic_ncols=True, position=0, ascii=(mode in {"ascii", "braille"}), leave=True)
+        progress = tqdm(total=total, desc="📽 Rendering", unit="f", dynamic_ncols=True, position=0, ascii=(mode in {"ascii", "bw"}), leave=True)
 
     bitrate_mode = "uncompressed"
     bitrate_str = "🔌 0 b"

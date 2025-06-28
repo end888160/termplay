@@ -312,8 +312,8 @@ def dither_image(
         ]
 
         # Scale to larger matrices as needed
-        if dither_levels > 2:
-            pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
+        if dither_levels > 4:
+            pattern = [(dx * (dither_levels // 4), dy * (dither_levels // 4), factor) for dx, dy, factor in pattern]
     elif dither_diffusion == 'sierra':
         # Sierra dithering pattern
         pattern = [
@@ -371,7 +371,7 @@ def dither_image(
                     new_g = max(0, min(255, ng * step))
                     new_b = max(0, min(255, nb * step))
                     arr[x,y] = (new_r, new_g, new_b)
-                elif dither_diffusion == 'random':
+                if dither_diffusion == 'random':
                     jitter_r = random.uniform(-step/2, step/2)
                     jitter_g = random.uniform(-step/2, step/2)
                     jitter_b = random.uniform(-step/2, step/2)
@@ -720,7 +720,7 @@ def play_video(
 
     # Progress bar
     if not no_progress:
-        progress = tqdm(total=total, desc="📽 Rendering", unit="f", dynamic_ncols=True, position=0, ascii=(mode in {"ascii", "braille"}), leave=True)
+        progress = tqdm(total=total, desc="📽 Rendering", unit="f", dynamic_ncols=True, position=0, ascii=(mode in {"ascii", "bw"}), leave=True)
 
     bitrate_mode = "uncompressed"
     bitrate_str = "🔌 0 b"

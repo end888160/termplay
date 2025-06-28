@@ -312,8 +312,8 @@ def dither_image(
         ]
 
         # Scale to larger matrices as needed
-        if dither_levels > 2:
-            pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
+        if dither_levels > 4:
+            pattern = [(dx * (dither_levels // 4), dy * (dither_levels // 4), factor) for dx, dy, factor in pattern]
     elif dither_diffusion == 'sierra':
         # Sierra dithering pattern
         pattern = [
@@ -335,15 +335,7 @@ def dither_image(
             if dither_mode == 'gray':
                 r, g, b = arr[x,y]
                 old = int((r+g+b)/3)
-                if dither_diffusion == 'bayer4x4':
-                    threshold = bayer4x4[y % 4][x % 4]
-                    r, g, b = arr[x,y]
-                    old = int((r+g+b)/3)
-                    normalized = old / 255
-                    base = int((normalized + threshold / dither_levels) * dither_levels)
-                    new = max(0, min(255, base * step))
-                    arr[x,y] = (new, new, new)
-                elif dither_diffusion == 'random':
+                if dither_diffusion == 'random':
                     jitter = random.uniform(-step/2, step/2)
                     new = ((old + jitter) // step) * step
                     arr[x,y] = (int(new), int(new), int(new))
@@ -361,17 +353,7 @@ def dither_image(
 
             elif dither_mode == 'rgb':
                 old_r, old_g, old_b = arr[x,y]
-                if dither_diffusion == 'bayer4x4':
-                    threshold = bayer4x4[y % 4][x % 4]
-                    old_r, old_g, old_b = arr[x,y]
-                    nr = int((old_r / 255 + threshold / dither_levels) * dither_levels)
-                    ng = int((old_g / 255 + threshold / dither_levels) * dither_levels)
-                    nb = int((old_b / 255 + threshold / dither_levels) * dither_levels)
-                    new_r = max(0, min(255, nr * step))
-                    new_g = max(0, min(255, ng * step))
-                    new_b = max(0, min(255, nb * step))
-                    arr[x,y] = (new_r, new_g, new_b)
-                elif dither_diffusion == 'random':
+                if dither_diffusion == 'random':
                     jitter_r = random.uniform(-step/2, step/2)
                     jitter_g = random.uniform(-step/2, step/2)
                     jitter_b = random.uniform(-step/2, step/2)
@@ -720,7 +702,7 @@ def play_video(
 
     # Progress bar
     if not no_progress:
-        progress = tqdm(total=total, desc="📽 Rendering", unit="f", dynamic_ncols=True, position=0, ascii=(mode in {"ascii", "braille"}), leave=True)
+        progress = tqdm(total=total, desc="📽 Rendering", unit="f", dynamic_ncols=True, position=0, ascii=(mode in {"ascii", "bw"}), leave=True)
 
     bitrate_mode = "uncompressed"
     bitrate_str = "🔌 0 b"

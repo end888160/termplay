@@ -10,7 +10,6 @@ import numpy as np
 from PIL import Image
 import zlib
 import random
-import scipy
 
 def image_to_array(img):
     return np.asarray(img).astype(np.float32)
@@ -375,15 +374,7 @@ def apply_dither(
             if dither_mode == 'gray':
                 r, g, b = arr[x,y]
                 old = int((r+g+b)/3)
-                if dither_diffusion == 'bayer4x4':
-                    threshold = bayer4x4[y % 4][x % 4]
-                    r, g, b = arr[x,y]
-                    old = int((r+g+b)/3)
-                    normalized = old / 255
-                    base = int((normalized + threshold / dither_levels) * dither_levels)
-                    new = max(0, min(255, base * step))
-                    arr[x,y] = (new, new, new)
-                elif dither_diffusion == 'random':
+                if dither_diffusion == 'random':
                     jitter = random.uniform(-step/2, step/2)
                     new = ((old + jitter) // step) * step
                     new = max(0, min(255, int(new)))
@@ -402,17 +393,7 @@ def apply_dither(
 
             elif dither_mode == 'rgb':
                 old_r, old_g, old_b = arr[x,y]
-                if dither_diffusion == 'bayer4x4':
-                    threshold = bayer4x4[y % 4][x % 4]
-                    old_r, old_g, old_b = arr[x,y]
-                    nr = int((old_r / 255 + threshold / dither_levels) * dither_levels)
-                    ng = int((old_g / 255 + threshold / dither_levels) * dither_levels)
-                    nb = int((old_b / 255 + threshold / dither_levels) * dither_levels)
-                    new_r = max(0, min(255, nr * step))
-                    new_g = max(0, min(255, ng * step))
-                    new_b = max(0, min(255, nb * step))
-                    arr[x,y] = (new_r, new_g, new_b)
-                elif dither_diffusion == 'random':
+                if dither_diffusion == 'random':
                     new_r = ((old_r + random.uniform(-step/2, step/2)) // step) * step
                     new_g = ((old_g + random.uniform(-step/2, step/2)) // step) * step
                     new_b = ((old_b + random.uniform(-step/2, step/2)) // step) * step

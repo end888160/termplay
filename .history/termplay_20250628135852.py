@@ -25,6 +25,7 @@ import json
 import textwrap
 import pygame
 import tempfile
+from webvtt.structures import parse_timestamp
 import random
 
 key_pressed = None
@@ -293,33 +294,22 @@ def dither_image(
             pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
     elif dither_diffusion == 'jarvis':
         # Jarvis dithering pattern
-        pattern = [
-            (1, 0, 7/48), (2, 0, 5/48),
-            (-2,1,3/48), (-1,1,5/48), (0,1,7/48), (1,1,5/48), (2,1,3/48),
-            (-2,2,1/48), (-1,2,3/48), (0,2,5/48), (1,2,3/48), (2,2,1/48)
-        ]
-
+        pattern = [(1, 0, 7/48), (-2, 1, 5/48), (1, 1, 3/48), (2, 1, 1/48), (0, 1, 5/48), (0, 2, 3/48)]
         # Scale to larger matrices as needed
         if dither_levels > 2:
             pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
     elif dither_diffusion == 'bayer4x4':
         # Bayer 4x4 dithering pattern
-        bayer4x4 = [
-            [ 0/16,  8/16,  2/16, 10/16],
-            [12/16,  4/16, 14/16,  6/16],
-            [ 3/16, 11/16,  1/16,  9/16],
-            [15/16,  7/16, 13/16,  5/16],
+        pattern = [
+            (2, 0, 1/16), (3, 0, 1/16), (0, 1, 1/16), (1, 1, 1/16),
+            (2, 2, 1/16), (3, 2, 1/16), (0, 3, 1/16), (1, 3, 1/16)
         ]
-
         # Scale to larger matrices as needed
-        if dither_levels > 2:
-            pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
+        if dither_levels > 4:
+            pattern = [(dx * (dither_levels // 4), dy * (dither_levels // 4), factor) for dx, dy, factor in pattern]
     elif dither_diffusion == 'sierra':
         # Sierra dithering pattern
-        pattern = [
-            (1,0,5/32),(2,0,3/32),(-2,1,2/32),(-1,1,4/32),(0,1,5/32),
-            (1,1,4/32),(2,1,2/32),(-1,2,2/32),(0,2,3/32),(1,2,2/32)
-        ]
+        pattern = [(1, 0, 5/32), (-2, 1, 3/32), (1, 1, 2/32), (2, 1, 1/32), (0, 1, 3/32), (0, 2, 1/32)]
         # Scale to larger matrices as needed
         if dither_levels > 2:
             pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
@@ -329,72 +319,39 @@ def dither_image(
         pattern = []  # no error diffusion, just stochastic threshold
     else:
         pattern = []
-
     for y in range(h):
         for x in range(w):
             if dither_mode == 'gray':
                 r, g, b = arr[x,y]
                 old = int((r+g+b)/3)
-                if dither_diffusion == 'bayer4x4':
-                    threshold = bayer4x4[y % 4][x % 4]
-                    r, g, b = arr[x,y]
-                    old = int((r+g+b)/3)
-                    normalized = old / 255
-                    base = int((normalized + threshold / dither_levels) * dither_levels)
-                    new = max(0, min(255, base * step))
-                    arr[x,y] = (new, new, new)
-                elif dither_diffusion == 'random':
-                    jitter = random.uniform(-step/2, step/2)
-                    new = ((old + jitter) // step) * step
-                    arr[x,y] = (int(new), int(new), int(new))
-                else:
-                    new = (old // step) * step
-                    quant_error = old - new
-                    arr[x,y] = (new, new, new)
-                    for dx, dy, factor in pattern:
-                        nx, ny = x+dx, y+dy
-                        if 0 <= nx < w and 0 <= ny < h:
-                            nr, ng, nb = arr[nx, ny]
-                            avg = int((nr+ng+nb)/3 + quant_error*factor)
-                            avg = max(0, min(255, avg))
-                            arr[nx, ny] = (avg, avg, avg)
+                new = (old // step) * step
+                quant_error = old - new
+                arr[x,y] = (new, new, new)
+                for dx, dy, factor in pattern:
+                    nx, ny = x+dx, y+dy
+                    if 0 <= nx < w and 0 <= ny < h:
+                        nr, ng, nb = arr[nx, ny]
+                        avg = int((nr+ng+nb)/3 + quant_error*factor)
+                        avg = max(0, min(255, avg))
+                        arr[nx, ny] = (avg, avg, avg)
 
             elif dither_mode == 'rgb':
                 old_r, old_g, old_b = arr[x,y]
-                if dither_diffusion == 'bayer4x4':
-                    threshold = bayer4x4[y % 4][x % 4]
-                    old_r, old_g, old_b = arr[x,y]
-                    nr = int((old_r / 255 + threshold / dither_levels) * dither_levels)
-                    ng = int((old_g / 255 + threshold / dither_levels) * dither_levels)
-                    nb = int((old_b / 255 + threshold / dither_levels) * dither_levels)
-                    new_r = max(0, min(255, nr * step))
-                    new_g = max(0, min(255, ng * step))
-                    new_b = max(0, min(255, nb * step))
-                    arr[x,y] = (new_r, new_g, new_b)
-                elif dither_diffusion == 'random':
-                    jitter_r = random.uniform(-step/2, step/2)
-                    jitter_g = random.uniform(-step/2, step/2)
-                    jitter_b = random.uniform(-step/2, step/2)
-                    new_r = ((old_r + jitter_r) // step) * step
-                    new_g = ((old_g + jitter_g) // step) * step
-                    new_b = ((old_b + jitter_b) // step) * step
-                    arr[x,y] = (int(new_r), int(new_g), int(new_b))
-                else:
-                    new_r = (old_r // step) * step
-                    new_g = (old_g // step) * step
-                    new_b = (old_b // step) * step
-                    arr[x,y] = (new_r, new_g, new_b)
-                    err_r = old_r - new_r
-                    err_g = old_g - new_g
-                    err_b = old_b - new_b
-                    for dx, dy, factor in pattern:
-                        nx, ny = x+dx, y+dy
-                        if 0 <= nx < w and 0 <= ny < h:
-                            nr, ng, nb = arr[nx, ny]
-                            nr = max(0, min(255, int(nr + err_r*factor)))
-                            ng = max(0, min(255, int(ng + err_g*factor)))
-                            nb = max(0, min(255, int(nb + err_b*factor)))
-                            arr[nx, ny] = (nr, ng, nb)
+                new_r = (old_r // step) * step
+                new_g = (old_g // step) * step
+                new_b = (old_b // step) * step
+                arr[x,y] = (new_r, new_g, new_b)
+                err_r = old_r - new_r
+                err_g = old_g - new_g
+                err_b = old_b - new_b
+                for dx, dy, factor in pattern:
+                    nx, ny = x+dx, y+dy
+                    if 0 <= nx < w and 0 <= ny < h:
+                        nr, ng, nb = arr[nx, ny]
+                        nr = max(0, min(255, int(nr + err_r*factor)))
+                        ng = max(0, min(255, int(ng + err_g*factor)))
+                        nb = max(0, min(255, int(nb + err_b*factor)))
+                        arr[nx, ny] = (nr, ng, nb)
 
     return img
 
@@ -720,7 +677,7 @@ def play_video(
 
     # Progress bar
     if not no_progress:
-        progress = tqdm(total=total, desc="📽 Rendering", unit="f", dynamic_ncols=True, position=0, ascii=(mode in {"ascii", "braille"}), leave=True)
+        progress = tqdm(total=total, desc="📽 Rendering", unit="f", dynamic_ncols=True, position=0, ascii=(mode in {"ascii", "bw"}), leave=True)
 
     bitrate_mode = "uncompressed"
     bitrate_str = "🔌 0 b"
@@ -1017,7 +974,7 @@ CONTROLS:
     parser.add_argument("-sub", "--subtitle",  type=str, help="Path to subtitle file (.srt or .vtt). Useful for no audio playback scenarios like SSH.")
     parser.add_argument("-dl", "--dither-levels", type=int, default=4, help="Levels for dithering (default 4)")
     parser.add_argument("-dd", "--dither-mode", choices=["gray", "rgb"], default="gray", help="Dither mode gray or rgb")
-    parser.add_argument("-dm", "--dither-method", choices=["floyd", "atkinson", 'bayer', 'stucki', 'jarvis', 'bayer4x4', 'sierra', 'random', "none"], default="floyd", help="Dither diffusion")
+    parser.add_argument("-dm", "--dither-method", choices=["floyd", "atkinson", 'bayer', 'stucki', 'jarvis', 'bayer4x4', 'sierra', "none"], default="floyd", help="Dither diffusion")
 
     parser.add_argument("-s", "--resampling", choices=RESAMPLING_MAP.keys(), default="bicubic",
                     help="Resampling method for image resizing (default: bicubic)")

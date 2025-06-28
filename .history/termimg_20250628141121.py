@@ -10,7 +10,6 @@ import numpy as np
 from PIL import Image
 import zlib
 import random
-import scipy
 
 def image_to_array(img):
     return np.asarray(img).astype(np.float32)
@@ -403,15 +402,7 @@ def apply_dither(
             elif dither_mode == 'rgb':
                 old_r, old_g, old_b = arr[x,y]
                 if dither_diffusion == 'bayer4x4':
-                    threshold = bayer4x4[y % 4][x % 4]
-                    old_r, old_g, old_b = arr[x,y]
-                    nr = int((old_r / 255 + threshold / dither_levels) * dither_levels)
-                    ng = int((old_g / 255 + threshold / dither_levels) * dither_levels)
-                    nb = int((old_b / 255 + threshold / dither_levels) * dither_levels)
-                    new_r = max(0, min(255, nr * step))
-                    new_g = max(0, min(255, ng * step))
-                    new_b = max(0, min(255, nb * step))
-                    arr[x,y] = (new_r, new_g, new_b)
+
                 elif dither_diffusion == 'random':
                     new_r = ((old_r + random.uniform(-step/2, step/2)) // step) * step
                     new_g = ((old_g + random.uniform(-step/2, step/2)) // step) * step

@@ -403,7 +403,6 @@ def apply_dither(
             elif dither_mode == 'rgb':
                 old_r, old_g, old_b = arr[x,y]
                 if dither_diffusion == 'bayer4x4':
-                    threshold = bayer4x4[y % 4][x % 4]
                     old_r, old_g, old_b = arr[x,y]
                     nr = int((old_r / 255 + threshold / dither_levels) * dither_levels)
                     ng = int((old_g / 255 + threshold / dither_levels) * dither_levels)
