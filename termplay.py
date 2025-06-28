@@ -675,6 +675,8 @@ def play_video(
     audio_start_time = 0.0
     audio_paused_at = 0.0
     is_audio_paused = False
+    volume = 1.0  # max
+
 
 
     # Get video properties
@@ -773,9 +775,19 @@ def play_video(
                         if paused:
                             stop_audio()
 
-                elif key_pressed == '\x1b':  # ESC → arrow
+                elif key_pressed == '\x1b':  # ESC or arrow sequence
                     seq = sys.stdin.read(2)
-                    if seq == '[D':  # ← left
+                    if seq == '[A':  # ↑
+                        volume = min(1.0, volume + 0.1)
+                        if audio:
+                            pygame.mixer.music.set_volume(volume)
+                        print(f"\rVolume: {volume:.1f}", end='', flush=True)
+                    elif seq == '[B':  # ↓
+                        volume = max(0.0, volume - 0.1)
+                        if audio:
+                            pygame.mixer.music.set_volume(volume)
+                        print(f"\rVolume: {volume:.1f}", end='', flush=True)
+                    elif seq == '[D':  # ← left
                         frame_index = max(0, frame_index - int(seek_offset * input_fps))
                     elif seq == '[C':  # → right
                         frame_index = min(total - 1, frame_index + int(seek_offset * input_fps))
@@ -813,17 +825,34 @@ def play_video(
                     if audio:
                         stop_audio()
                         play_audio(start_sec=0.0)
-                elif key_pressed == 'h':
-                    # Show help
-                    print("\nControls:")
-                    print("  [<-]    Seek left")
-                    print("  [->]    Seek right")
-                    print("  [SPACE] Pause/Resume")
-                    print("  [Q]     Exit")
-                    print("  [B]     Toggle bitrate display")
-                    print("  [R]     Reset video playback")
-                    print("  [H]     Show this help")
-                    key_pressed = None
+                elif key_pressed == 'g':
+                    try:
+                        # Restore normal terminal input mode for line input
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, orig_settings)
+                        sys.stdout.write("\x1b[?25h")  # show cursor
+                        goto_time = float(input("\nGo to time (seconds): "))
+                        sys.stdout.write("\x1b[?25l")  # hide cursor
+
+                        if goto_time < 0:
+                            goto_time = 0
+                        elif goto_time > duration:
+                            goto_time = duration
+
+                        frame_index = int(goto_time * input_fps)
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+                        start_time = time.time() - (frame_index / input_fps)
+
+                        if audio:
+                            stop_audio()
+                            play_audio(start_sec=frame_index / input_fps)
+
+                    except ValueError:
+                        print("Invalid input. Please enter a valid number.")
+
+                    finally:
+                        # Re-enter raw mode for key presses
+                        tty.setcbreak(sys.stdin.fileno())
+
 
 
                 key_pressed = None
@@ -992,12 +1021,15 @@ if __name__ == "__main__":
         description=f"🎞 {os.path.basename(sys.argv[0])}: Render video frames in terminal. When using SSH Connection, use the `-C` option to enable compression, which is recommended. (e.g. `ssh -C user@host 'python3 {os.path.split(sys.argv[0])[1]} video.mp4')",
         epilog="""\
 CONTROLS:
-  [<-]    Seek 10s left
-  [->]    Seek 10s right
+  [LEFT]  Seek 10s left
+  [RIGHT] Seek 10s right
+  [UP]    Volume up
+  [DOWN]  Volume down
   [R]     Reset video playback
   [SPACE] Pause/Resume
   [Q]     Exit
   [B]     Toggle bitrate display (🔌 uncompressed / 📡 compressed)
+  [G]     Go to time
 """
 ,
         formatter_class=argparse.RawDescriptionHelpFormatter
