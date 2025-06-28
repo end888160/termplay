@@ -401,33 +401,14 @@ def dither_image(
 
     return img
 
-
-
-def render_braille(img, dither=False):
-    """ Render an image using Braille characters, where each character represents a 2x4 pixel block. """
-    if dither:
-        img = dither_image(img, levels=2, diffusion='floyd', mode='gray')
-
-
-    lines = []
-    for y in range(0, img.height - img.height % 4, 4):
-        line = ''
-        for x in range(0, img.width - img.width % 2, 2):
-            dots = 0
-            for dy in range(4):
-                for dx in range(2):
-                    r, g, b = img.getpixel((x + dx, y + dy))
-                    lum = (r + g + b) / 3
-                    if lum > 127:
-                        braille_map = {
-                            (0, 0): 0, (1, 0): 1, (2, 0): 2, (3, 0): 6,
-                            (0, 1): 3, (1, 1): 4, (2, 1): 5, (3, 1): 7,
-                        }
-                        dots |= 1 << braille_map[(dy, dx)]
-            char = chr(0x2800 + dots)
-            line += char
-        lines.append(line)
-    return "\n".join(lines)
+def rgb_to_braille_block(block):
+    """Render a Braille character from a 2x4 block of (r,g,b) tuples."""
+    dots = 0
+    for i, (r, g, b) in enumerate(block):
+        lum = (r + g + b) / 3
+        if lum > 127:
+            dots |= 1 << i
+    return chr(0x2800 + dots)
 
 
 
@@ -523,25 +504,22 @@ def render_frame(
         mode="color", 
         char=BLOCK_CHAR, 
         dither=False, 
-        legacy=False, 
-        dither_levels=4, 
-        dither_diffusion="gray",
-        dither_mode="floyd"
+        dither_diffusion="floyd",
     ):
-
     """ Render a single frame of an image in the specified mode. """
+
+    if mode == "half":
+        return render_half_block(img)
     if dither:
         if mode in {"gray", "grey"}:
             img = dither_image(img, dither_levels=4, dither_diffusion=dither_diffusion, dither_mode='gray')
         elif mode == "ascii":
             img = dither_image(img, dither_levels=len(ASCII_CHARS), dither_diffusion=dither_diffusion, dither_mode='gray')
-        elif mode in {"color", "256", "16", "8"}:
+        elif mode in {"color", "half", "256", "16", "8"}:
             img = dither_image(img, dither_levels=8, dither_diffusion=dither_diffusion, dither_mode='rgb')
-        elif mode == "bw" or mode == "braille":
+        elif mode in {"bw", "braille"}:
             img = dither_image(img, dither_levels=2, dither_diffusion=dither_diffusion, dither_mode='gray')
 
-    elif mode == "half":
-        return render_half_block(img)
 
     lines = []
     for y in range(img.height):
@@ -555,6 +533,18 @@ def render_frame(
                 line += f"\x1b[38;2;{gval};{gval};{gval}m{char}\x1b[0m"
             elif mode == "bw":
                 line += rgb_to_bw(r, g, b, char)
+            elif mode == "braille":
+                block = []
+                for dy in range(4):
+                    for dx in range(2):
+                        px = x + dx
+                        py = y + dy
+                        if px < img.width and py < img.height:
+                            block.append(img.getpixel((px, py)))
+                        else:
+                            block.append((0,0,0))  # black padding
+                line += rgb_to_braille_block(block)
+
             else:
                 line += rgb_to_ansi_general(r, g, b, mode=mode, char=char, legacy=args.legacy)
         lines.append(line)
@@ -657,9 +647,8 @@ def play_video(
         no_progress=False, 
         no_cursor=False, 
         subtitle=None,
-        dither_levels=4,
-        dither_diffusion="gray",
-        dither_mode="floyd"
+        dither_diffusion="floyd",
+        subtitle_lines=1,
 
     ):
     """ Play a video in the terminal with various rendering modes. """
@@ -734,6 +723,8 @@ def play_video(
 
     bitrate_mode = "uncompressed"
     bitrate_str = "🔌 0 b"
+
+    max_subtitle_lines = subtitle_lines
 
     # Progress bar variables - calculate bytes per second
     total_bytes = 0
@@ -970,11 +961,34 @@ def play_video(
             else:
                 sys.stdout.write("\x1b[1;0H")
                 sys.stdout.flush()
+
+            term_width, term_height = shutil.get_terminal_size()
+
+            reserved_lines = 1  # safety margin
+            if not no_progress:
+                reserved_lines += 1
+            if subtitle:
+                reserved_lines += max_subtitle_lines + 2  # subtitle box
+
+            available_lines = max(1, term_height - reserved_lines)
+
+            # adjust for half/braille
+            if mode == "half":
+                row_factor = 0.575
+            elif mode == "braille":
+                row_factor = 0.55
+            else:
+                row_factor = 0.55
+
+            safe_width = width or term_width
+            max_ratio = (available_lines / row_factor) / safe_width
+            effective_ratio = min(ratio, max_ratio)
+
             # Resize frame
             img = resize_frame(
                 frame,
                 width=width or safe_width,  # ✅ use the passed --width value
-                height_ratio=ratio,
+                height_ratio=effective_ratio,
                 double_row=(mode == "half"),
                 resample=RESAMPLING_MAP[resample_filter],
             )
@@ -984,25 +998,24 @@ def play_video(
                 mode=mode, 
                 char=char, 
                 dither=dither,
-                legacy=args.legacy,
-                dither_levels=dither_levels,
                 dither_diffusion=dither_diffusion,
-                dither_mode=dither_mode
             ) + "\n"
 
             # Render subtitle
             if subtitle:
                 subtitle_text = get_subtitle_at(subtitles, current_time)
                 if subtitle_text:
-                    frame_text += render_subtitle_line(subtitle_text, term_width, ascii=mode=="ascii") + "\x1b[0m\n"
+                    frame_text += render_subtitle_line(subtitle_text, term_width, max_lines=max_subtitle_lines, ascii=mode=="ascii") + "\x1b[0m\n"
                 else:
-                    frame_text += "" + render_subtitle_line(" ", term_width, ascii=mode=="ascii") + "\n"
+                    frame_text += "" + render_subtitle_line(" ", term_width, max_lines=max_subtitle_lines, ascii=mode=="ascii") + "\n"
 
 
             # Get frame bytes
             frame_bytes = frame_text.encode("utf-8")
             sys.stdout.write(frame_bytes.decode("utf-8"))
             sys.stdout.flush()
+
+
 
             # Track byte size
             total_bytes += len(frame_bytes)
@@ -1131,8 +1144,7 @@ CONTROLS:
     parser.add_argument("-ra", "--reverse-ascii", action="store_true", help="Use reverse ASCII characters for rendering (default: False)")
     parser.add_argument("-l", "--legacy", action="store_true", help="Enable compatibility mode for legacy terminals (e.g. Windows XP)")
     parser.add_argument("-sub", "--subtitle",  type=str, help="Path to subtitle file (.srt or .vtt). Useful for no audio playback scenarios like SSH.")
-    parser.add_argument("-dl", "--dither-levels", type=int, default=4, help="Levels for dithering (default 4)")
-    parser.add_argument("-dd", "--dither-mode", choices=["gray", "rgb"], default="gray", help="Dither mode gray or rgb")
+    parser.add_argument("-ml", "--max-subtitle-lines", type=int, default=1, help="Number of subtitle lines to display")
     parser.add_argument("-dm", "--dither-method", choices=["floyd", "atkinson", 'bayer', 'stucki', 'jarvis', 'bayer4x4', 'sierra', 'random', "none"], default="floyd", help="Dither diffusion")
 
     parser.add_argument("-s", "--resampling", choices=RESAMPLING_MAP.keys(), default="bicubic",
@@ -1171,9 +1183,8 @@ CONTROLS:
             no_progress=args.no_progress,
             no_cursor=args.no_cursor,
             subtitle=args.subtitle,
-            dither_levels=args.dither_levels, 
             dither_diffusion=args.dither_method, 
-            dither_mode=args.dither_mode
+            subtitle_lines=args.max_subtitle_lines
         )
         if not args.loop:
             break
