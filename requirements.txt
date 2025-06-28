@@ -1,0 +1,8 @@
+pillow
+tqdm
+humanize
+numpy
+opencv-python
+pysrt
+webvtt-py
+pygame
