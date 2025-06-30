@@ -163,7 +163,7 @@ def rgb_to_ansi_8(r, g, b, char=BLOCK_CHAR):
     min_dist = float('inf')
     best_index = 0
     for i, (cr, cg, cb) in enumerate(base_colors):
-        dist = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2
+        dist = abs(r-cr) + abs(g-cg) + abs(b-cb)
         if dist < min_dist:
             min_dist = dist
             best_index = i
@@ -205,7 +205,7 @@ def rgb_to_ansi_16(r, g, b, char=BLOCK_CHAR):
     min_dist = float('inf')
     best_index = 0
     for i, (cr, cg, cb) in enumerate(ANSI_16_COLORS):
-        dist = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2
+        dist = abs(r-cr) + abs(g-cg) + abs(b-cb)
         if dist < min_dist:
             min_dist = dist
             best_index = i
@@ -461,64 +461,73 @@ def get_audio_pos():
 
 
 def resize_frame(
-        frame, 
-        width=None, 
-        height_ratio=0.5, 
-        double_row=False, 
-        mode="color", 
-        resample=Image.BICUBIC
-    ):
-    """ Resize a frame to fit terminal width, maintaining aspect ratio."""
+    frame, 
+    width=None, 
+    height_ratio=0.5, 
+    double_row=False, 
+    mode="color", 
+    resample=Image.BICUBIC
+):
+    import shutil
+    import cv2
+    from PIL import Image
+
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pil = Image.fromarray(frame)
 
-    if resample is None:
-        return pil  # skip resizing
+    term_width, term_height = shutil.get_terminal_size()
+    reserved_lines = 3
+    max_lines = max(1, term_height - reserved_lines)
 
-    w = width or term_width
-    w = max(20, min(w, term_width - 1))  # clamp width between 20 and usable terminal width
+    video_aspect = pil.height / pil.width
 
-    # adjust ratio by actual terminal cell ratio
     if mode == "half":
-        cell_aspect = 0.825  # each cell is 2 pixels high
+        cell_aspect = 2/3
     elif mode == "braille":
-        cell_aspect = 1.25 # each cell encodes 4 pixels vertically
+        cell_aspect = 0.25
     else:
-        cell_aspect = 0.4125 # typical text mode
+        cell_aspect = 0.55
+    # FORCE WIDTH to terminal width
+    target_width = width or (term_width - 1)
 
-    # preserve video aspect ratio corrected by terminal cell aspect
-    h = int((pil.height / pil.width) * w * cell_aspect)
+    # compute height from that width
+    target_height = int(video_aspect * target_width * cell_aspect)
 
+    # but cap height
+    if target_height > max_lines:
+        target_height = max_lines
 
-    if double_row and h % 2 != 0:
-        h += 1  # make sure height is even for clean top/bottom split
+    if mode == "half":
+        target_height *= 2
 
-    pil = pil.resize((w, h), resample=resample)
+    if mode == "braille":
+        target_height *= 4
+
+    # resize
+    pil = pil.resize((target_width, target_height), resample=resample)
 
     if double_row and pil.height % 2 != 0:
-        pil = pil.crop((0, 0, pil.width, pil.height - 1))  # drop last row to make height even
+        pil = pil.crop((0, 0, pil.width, pil.height - 1))
 
     return pil
 
 
 
 def render_half_block(img, char="▀"):
-    """ Render an image using half-block characters, where each pixel is represented by two rows of pixels."""
     lines = []
-    for y in range(0, img.height - 1, 2):
-        line = ''
-        for x in range(img.width - (img.width % 1)):  # or just leave as is
+    term_width, _ = shutil.get_terminal_size()
+    pad = (term_width - img.width) // 2 if term_width > img.width else 0
 
+    for y in range(0, img.height - 1, 2):
+        line = ' ' * pad
+        for x in range(img.width):
             top = img.getpixel((x, y))
             bottom = img.getpixel((x, y + 1))
-
             r1, g1, b1 = top
             r2, g2, b2 = bottom
-
             line += f"\x1b[48;2;{r2};{g2};{b2}m\x1b[38;2;{r1};{g1};{b1}m{char}\x1b[0m"
         lines.append(line)
     return "\n".join(lines)
-
 
 
 def render_frame(
@@ -650,17 +659,36 @@ def parse_subtitle_html(text):
 
 ansi_escape_re = re.compile(r'\x1b\[[0-9;]*[mK]')
 
-def strip_ansi(text):
-    """ Strip ANSI escape codes from a string. """
-    return ansi_escape_re.sub('', text)
+import unicodedata
+
+def str_display_width(text):
+    width = 0
+    for ch in text:
+        if unicodedata.east_asian_width(ch) in ('F', 'W'):
+            width += 2
+        else:
+            width += 1
+    return width
 
 def ansi_center(line, width):
-    """ Center a line of text in a given width, stripping ANSI codes. """
-    stripped_len = len(strip_ansi(line))
-    total_padding = max(0, width - stripped_len)
+    display_len = str_display_width(line)
+    total_padding = max(0, width - display_len)
     left_pad = total_padding // 2
     right_pad = total_padding - left_pad
     return " " * left_pad + line + " " * right_pad
+
+def truncate_display(text, max_width):
+    """Truncate a string to fit in max display width, adding … if needed."""
+    result = ''
+    display_len = 0
+    for ch in text:
+        ch_width = 2 if unicodedata.east_asian_width(ch) in ('F', 'W') else 1
+        if display_len + ch_width > max_width:
+            return result + '…'
+        result += ch
+        display_len += ch_width
+    return result
+
 
 def render_subtitle_line(text, width, max_lines=1, ascii=False):
     """ Render a subtitle line with a frame around it. """
@@ -672,7 +700,14 @@ def render_subtitle_line(text, width, max_lines=1, ascii=False):
         
 
     max_content_width = width - 4
-    lines = textwrap.wrap(text.strip(), max_content_width) if text else []
+    if text:
+        lines = []
+        for paragraph in text.strip().split('\n'):
+            line = truncate_display(paragraph, max_content_width)
+            lines.append(line)
+    else:
+        lines = []
+
     lines = lines[:max_lines]
 
     # Pad to always have `max_lines`
@@ -730,12 +765,13 @@ def play_video(
     is_audio_paused = False
     volume = 1.0  # max
     pause_start_time = None
-    total_pause_time = 0
     mute = False
+
+    video_fps = cap.get(cv2.CAP_PROP_FPS)
 
     # Get video properties
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    input_fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    input_fps = video_fps or 25
     target_fps = fps_limit or input_fps
     frame_skip = max(int(round(input_fps / target_fps)), 1)
 
@@ -783,7 +819,8 @@ def play_video(
             dynamic_ncols=True, 
             position=0, 
             ascii=(mode in {"ascii", "braille"}), 
-            leave=True
+            leave=True,
+            smoothing=0
         )
 
     bitrate_mode = "uncompressed"
@@ -921,6 +958,35 @@ def play_video(
                     finally:
                         # Re-enter raw mode for key presses
                         tty.setcbreak(sys.stdin.fileno())
+                elif key_pressed == 'f':
+                    # Set limited frame rate
+                    try:
+                        # Restore normal terminal input mode for line input
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, orig_settings)
+                        sys.stdout.write("\x1b[?25h")  # show cursor
+                        new_fps = float(input("\nSet target FPS (0 for no limit): "))
+                        sys.stdout.write("\x1b[?25l")  # hide cursor
+                        if new_fps <= 0:
+                            fps_limit = None
+                        else:
+                            fps_limit = new_fps
+                            frame_skip = max(int(round(input_fps / fps_limit)), 1)
+                        print(f"Target FPS set to: {fps_limit if fps_limit else 'unlimited'}")
+                    except ValueError:
+                        print("Invalid input. Please enter a valid number.")
+                    finally:
+                        # Re-enter raw mode for key presses
+                        tty.setcbreak(sys.stdin.fileno())
+                elif key_pressed == 's':
+                    # Toggle subtitles
+                    if subtitle:
+                        subtitle = not subtitle
+                        if subtitle:
+                            print("\nSubtitles enabled.")
+                        else:
+                            print("\nSubtitles disabled.")
+                    else:
+                        print("\nNo subtitles loaded.")
                 elif key_pressed == 'p':
                     # Toggle progress bar
                     no_progress = not no_progress
@@ -928,9 +994,14 @@ def play_video(
                         progress.close()
                     else:
                         progress = tqdm(
-                            total=duration, 
-                            initial=current_time, 
-                            desc=f"📽 Rendering... [⏱ {format_time(current_time)}/{format_time(duration)}] {bitrate_str}ps"
+                            total=total, 
+                            desc="📽 Rendering", 
+                            unit="f", 
+                            dynamic_ncols=True, 
+                            position=0, 
+                            ascii=(mode in {"ascii", "braille"}), 
+                            leave=True,
+                            smoothing=0
                         )
                 elif key_pressed == 'u':
                     # Toggle cursor
@@ -1003,12 +1074,6 @@ def play_video(
                 frame_index += 1
                 continue
 
-            safe_width = shutil.get_terminal_size().columns - 2  # or -2 to be extra safe
-            if width is None:
-                width = safe_width
-
-
-
 
             # Terminal title
             current_time = frame_index / input_fps
@@ -1051,19 +1116,20 @@ def play_video(
             else:
                 row_factor = 0.55
 
-            safe_width = width or term_width
-            max_ratio = (available_lines / row_factor) / safe_width
-            effective_ratio = min(ratio, max_ratio)
+            # Get terminal size
+            if frame_index % 5 == 0:  # every 5 frames
+                term_width = shutil.get_terminal_size().columns
+                term_height = shutil.get_terminal_size().lines
 
             # Resize frame
             img = resize_frame(
                 frame,
-                width=width or safe_width,  # ✅ use the passed --width value
-                height_ratio=effective_ratio,
+                width=term_width,  # ✅ use the passed --width value
                 double_row=(mode == "half"),
                 resample=RESAMPLING_MAP[resample_filter],
                 mode=mode
             )
+
             # Get frame text
             frame_text = render_frame(
                 img, 
@@ -1107,6 +1173,7 @@ def play_video(
             compressed_bytes += len(compressed_frame)
 
             total_compressed_bytes += len(compressed_frame)
+
 
             if not no_progress:
                 if bitrate_mode == 'uncompressed':
@@ -1181,7 +1248,7 @@ def play_video(
         if not no_progress:
             progress.close()
 
-        if args.no_cursor:
+        if no_cursor:
             sys.stdout.write("\x1b[?25h")  # show cursor
             sys.stdout.flush()
 
@@ -1207,6 +1274,7 @@ CONTROLS:
   [C]     Cycle color mode
   [D]     Toggle dither
   [E]     Cycle dither mode
+  [F]     Set frame rate
   [G]     Go to time
   [P]     Toggle progress bar
   [Q]     Exit

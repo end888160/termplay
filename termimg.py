@@ -125,28 +125,28 @@ def apply_grain_noise(img, strength=0.1):
     return array_to_image(noisy)
 
 def apply_chromatic_aberration(img, shift_x=2, shift_y=1):
-    """ Apply chromatic aberration to an image. """
     img = img.convert("RGB")
     arr = np.asarray(img)
 
-    # Split channels
     r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
 
     def shift_channel(channel, dx, dy):
-        return np.roll(channel, shift=(dx, dy), axis=(0, 1))
+        return np.roll(channel, shift=(dy, dx), axis=(0, 1))  # fix here
 
-    # Shift each channel slightly differently
     r_shifted = shift_channel(r, -shift_x, -shift_y)
     g_shifted = shift_channel(g, 0, 0)
     b_shifted = shift_channel(b, shift_x, shift_y)
 
-    # Stack back together
     result = np.stack([r_shifted, g_shifted, b_shifted], axis=-1)
     result = np.clip(result, 0, 255).astype(np.uint8)
 
     return Image.fromarray(result)
 
 
+def apply_gamma(img, gamma=0.8):
+    inv_gamma = 1.0 / gamma
+    table = [int((i / 255.0) ** inv_gamma * 255) for i in range(256)]
+    return img.point(table * 3)
 
 def apply_filters(img, filters):
     for f in tqdm(filters, desc="Applying filters", delay=2, unit="filter"):
@@ -203,6 +203,8 @@ def apply_filters(img, filters):
                 img = apply_bloom(img, intensity= value / 200, blur_radius=value)
             elif key == "chromatic":
                 img = apply_chromatic_aberration(img, value)
+            elif key == "gamma":
+                img = apply_gamma(img, value)
             else:
                 print(f"⚠️ Unknown filter '{key}'. Skipping...")
         except Exception as e:
@@ -342,16 +344,30 @@ def apply_dither(
     elif dither_diffusion == 'atkinson':
         pattern = [(1,0,1/8), (2,0,1/8), (-1,1,1/8), (0,1,1/8), (1,1,1/8), (0,2,1/8)]
     elif dither_diffusion == 'bayer':
+        # Bayer matrix for 2x2 dithering
         pattern = [(1, 0, 0.25), (0, 1, 0.25), (1, 1, 0.25), (0, 0, 0.25)]
+        # Scale to larger matrices as needed
+        if dither_levels > 2:
+            pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
     elif dither_diffusion == 'stucki':
+        # Stucki dithering pattern
         pattern = [(1, 0, 8/42), (-2, 1, 4/42), (1, 1, 2/42), (2, 1, 1/42), (0, 1, 4/42), (0, 2, 2/42)]
+        # Scale to larger matrices as needed
+        if dither_levels > 2:
+            pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
     elif dither_diffusion == 'jarvis':
+        # Jarvis dithering pattern
         pattern = [
             (1, 0, 7/48), (2, 0, 5/48),
             (-2,1,3/48), (-1,1,5/48), (0,1,7/48), (1,1,5/48), (2,1,3/48),
             (-2,2,1/48), (-1,2,3/48), (0,2,5/48), (1,2,3/48), (2,2,1/48)
         ]
+
+        # Scale to larger matrices as needed
+        if dither_levels > 2:
+            pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
     elif dither_diffusion == 'bayer4x4':
+        # Bayer 4x4 dithering pattern
         bayer4x4 = [
             [ 0/16,  8/16,  2/16, 10/16],
             [12/16,  4/16, 14/16,  6/16],
@@ -359,14 +375,25 @@ def apply_dither(
             [15/16,  7/16, 13/16,  5/16],
         ]
 
+        # Scale to larger matrices as needed
+        if dither_levels > 2:
+            bayer4x4 = [
+                [(val * (dither_levels // 2)) for val in row] for row in bayer4x4
+            ]
+        pattern = bayer4x4
     elif dither_diffusion == 'sierra':
+        # Sierra dithering pattern
         pattern = [
             (1,0,5/32),(2,0,3/32),(-2,1,2/32),(-1,1,4/32),(0,1,5/32),
             (1,1,4/32),(2,1,2/32),(-1,2,2/32),(0,2,3/32),(1,2,2/32)
         ]
-
+        # Scale to larger matrices as needed
+        if dither_levels > 2:
+            pattern = [(dx * (dither_levels // 2), dy * (dither_levels // 2), factor) for dx, dy, factor in pattern]
+    elif dither_diffusion == 'none':
+        pattern = []
     elif dither_diffusion == 'random':
-        pattern = []  # stochastic, handled separately
+        pattern = []  # no error diffusion, just stochastic threshold
     else:
         pattern = []
 
@@ -386,8 +413,7 @@ def apply_dither(
                 elif dither_diffusion == 'random':
                     jitter = random.uniform(-step/2, step/2)
                     new = ((old + jitter) // step) * step
-                    new = max(0, min(255, int(new)))
-                    arr[x,y] = (new, new, new)
+                    arr[x,y] = (int(new), int(new), int(new))
                 else:
                     new = (old // step) * step
                     quant_error = old - new
@@ -413,14 +439,13 @@ def apply_dither(
                     new_b = max(0, min(255, nb * step))
                     arr[x,y] = (new_r, new_g, new_b)
                 elif dither_diffusion == 'random':
-                    new_r = ((old_r + random.uniform(-step/2, step/2)) // step) * step
-                    new_g = ((old_g + random.uniform(-step/2, step/2)) // step) * step
-                    new_b = ((old_b + random.uniform(-step/2, step/2)) // step) * step
-                    arr[x,y] = (
-                        max(0,min(255,int(new_r))),
-                        max(0,min(255,int(new_g))),
-                        max(0,min(255,int(new_b)))
-                    )
+                    jitter_r = random.uniform(-step/2, step/2)
+                    jitter_g = random.uniform(-step/2, step/2)
+                    jitter_b = random.uniform(-step/2, step/2)
+                    new_r = ((old_r + jitter_r) // step) * step
+                    new_g = ((old_g + jitter_g) // step) * step
+                    new_b = ((old_b + jitter_b) // step) * step
+                    arr[x,y] = (int(new_r), int(new_g), int(new_b))
                 else:
                     new_r = (old_r // step) * step
                     new_g = (old_g // step) * step
@@ -455,11 +480,12 @@ MODE_RATIO_MAP = {
     "braille": 0.25,
 }
 
-def render_image(img, mode="color", char=BLOCK_CHAR, new_width=None, new_height=None):
+def render_image(img, mode="color", char=BLOCK_CHAR, new_width=None, new_height=None, resample=Image.NEAREST):
     image_text = []
     
     if mode == "ascii":
         # ASCII grayscale
+        img = img.resize((new_width, new_height), resample=resample)
         for y in range(img.height):
             for x in range(img.width):
                 r, g, b = img.getpixel((x, y))
@@ -472,7 +498,7 @@ def render_image(img, mode="color", char=BLOCK_CHAR, new_width=None, new_height=
         # Resize to multiple of 2x4
         new_width = (new_width // 2) * 2
         new_height = (new_height // 4) * 4
-        img_gray = img_gray.resize((new_width, new_height))
+        img_gray = img_gray.resize((new_width, new_height), resample=resample)
 
         threshold = 128
         for y in range(0, img_gray.height, 4):
@@ -487,7 +513,7 @@ def render_image(img, mode="color", char=BLOCK_CHAR, new_width=None, new_height=
 
     elif mode == "half":
         new_height = (new_height // 2) * 4
-        img = img.resize((new_width, new_height))
+        img = img.resize((new_width, new_height), resample=resample)
         for y in range(0, img.height - 1, 2):
             for x in range(img.width - (img.width % 1)):  # or just leave as is
                 top = img.getpixel((x, y))
@@ -496,6 +522,7 @@ def render_image(img, mode="color", char=BLOCK_CHAR, new_width=None, new_height=
             image_text.append('\n')
 
     elif mode == "grey":
+        img = img.resize((new_width, new_height), resample=resample)
         for y in range(img.height):
             for x in range(img.width):
                 r, g, b = img.getpixel((x, y))
@@ -503,6 +530,7 @@ def render_image(img, mode="color", char=BLOCK_CHAR, new_width=None, new_height=
             image_text.append('\n')
 
     elif mode == "256":
+        img = img.resize((new_width, new_height), resample=resample)
         for y in range(img.height):
             for x in range(img.width):
                 r, g, b = img.getpixel((x, y))
@@ -510,6 +538,7 @@ def render_image(img, mode="color", char=BLOCK_CHAR, new_width=None, new_height=
             image_text.append('\n')
 
     elif mode == "16":
+        img = img.resize((new_width, new_height), resample=resample)
         for y in range(img.height):
             for x in range(img.width):
                 r, g, b = img.getpixel((x, y))
@@ -517,12 +546,14 @@ def render_image(img, mode="color", char=BLOCK_CHAR, new_width=None, new_height=
             image_text.append('\n')
 
     elif mode == "8":
+        img = img.resize((new_width, new_height), resample=resample)
         for y in range(img.height):
             for x in range(img.width):
                 r, g, b = img.getpixel((x, y))
                 image_text.append(f"{rgb_to_ansi_8(r, g, b)}{char}\x1b[0m")
             image_text.append('\n')
     elif mode == "bw":
+        img = img.resize((new_width, new_height), resample=resample)
         # Image is already dithered to 1-bit in preprocessing above
         for y in range(img.height):
             for x in range(img.width):
@@ -534,6 +565,7 @@ def render_image(img, mode="color", char=BLOCK_CHAR, new_width=None, new_height=
 
 
     else:  # default: truecolor "color" mode
+        img = img.resize((new_width, new_height), resample=resample)
         for y in range(img.height):
             for x in range(img.width):
                 r, g, b = img.getpixel((x, y))
@@ -563,10 +595,10 @@ def show_image(image_path, width=None, height_ratio=0.5, char='█',
     eff_ratio = MODE_RATIO_MAP.get(mode, height_ratio)
 
 
-
+    
     if fit_to == "height":
         max_height = term_height - 2
-        aspect_ratio = img.height / img.width
+        aspect_ratio = img.height / img.width if img.width != 0 else 1
         eff_ratio = 1.0 if mode == "half_block" else height_ratio
         new_height = max_height
         new_width = int(new_height / (aspect_ratio * eff_ratio))
@@ -581,7 +613,7 @@ def show_image(image_path, width=None, height_ratio=0.5, char='█',
         new_height = int(img.height * (new_width / img.width) * eff_ratio)
     elif fit_to == "both":
         max_height = term_height - 2
-        aspect_ratio = img.height / img.width
+        aspect_ratio = img.height / img.width if img.width != 0 else 1
         eff_ratio = 1.0 if mode == "half_block" else height_ratio
         new_height = max_height
         new_width = int(new_height / (aspect_ratio * eff_ratio))
@@ -591,7 +623,6 @@ def show_image(image_path, width=None, height_ratio=0.5, char='█',
 
 
 
-    img = img.resize((new_width, new_height), resample=resample)
 
     if dither:
         if mode in {"ascii", "gray", "grey", "bw"}:
@@ -607,7 +638,8 @@ def show_image(image_path, width=None, height_ratio=0.5, char='█',
         mode=mode, 
         char=char,
         new_height=new_height,
-        new_width=new_width
+        new_width=new_width,
+        resample=resample
     )
 
     # calculate byte counts
@@ -617,9 +649,7 @@ def show_image(image_path, width=None, height_ratio=0.5, char='█',
     print(f"Total bytes: {humanize.naturalsize(total_byte_count)}, Compressed bytes: {humanize.naturalsize(compressed_byte_count)}")
 
     # print image
-    sys.stdout.write(
-        image_text
-    )
+    print(image_text, end='', flush=True)
 
     
 def strip_quotes(s):
