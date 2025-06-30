@@ -26,6 +26,8 @@ import textwrap
 import pygame
 import tempfile
 import random
+import webcolors
+
 
 key_pressed = None
 audio_start_time = 0.0
@@ -238,7 +240,7 @@ def rgb_to_ansi_general(r, g, b, mode='color', char='█', legacy=False):
     Map an RGB triplet to ANSI escape sequence based on selected mode.
     mode: 'true', '256', '16', '8', 'grey'
     """
-    if mode == 'color':
+    if mode in {'color', 'half'}:
         return f"\x1b[38;2;{r};{g};{b}m{char}\x1b[0m"
 
     elif mode == '256':
@@ -253,7 +255,6 @@ def rgb_to_ansi_general(r, g, b, mode='color', char='█', legacy=False):
 
     elif mode == 'grey':
         return rgb_to_ansi16_grey(r, g, b, char)
-
     else:
         return char  # fallback
 
@@ -424,8 +425,8 @@ def extract_audio(video_path):
     temp_audio.close()
     subprocess.run([
         "ffmpeg", "-y", "-i", video_path,
-        "-vn", "-acodec", "libvorbis", "-ar", "24000", "-ac", "1",
-        "-loglevel", "quiet", # suppress output
+        "-vn", "-acodec", "libvorbis", "-ar", "24000", "-ac", "1", "-aq", "-1",
+        # "-loglevel", "quiet", # suppress output
         audio_path
     ], check=True)
     return audio_path
@@ -459,53 +460,49 @@ def get_audio_pos():
     return pygame.mixer.music.get_pos() / 1000.0  # milliseconds → seconds
 
 
-
 def resize_frame(
     frame, 
     width=None, 
+    height=None,
     height_ratio=0.5, 
     double_row=False, 
     mode="color", 
     resample=Image.BICUBIC
 ):
-    import shutil
-    import cv2
-    from PIL import Image
-
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pil = Image.fromarray(frame)
 
-    term_width, term_height = shutil.get_terminal_size()
-    reserved_lines = 3
-    max_lines = max(1, term_height - reserved_lines)
-
-    video_aspect = pil.height / pil.width
+    video_aspect = pil.width / pil.height
 
     if mode == "half":
-        cell_aspect = 2/3
+        cell_aspect = 0.6
     elif mode == "braille":
-        cell_aspect = 0.25
+        cell_aspect = 1/3
     else:
-        cell_aspect = 0.55
-    # FORCE WIDTH to terminal width
-    target_width = width or (term_width - 1)
+        cell_aspect = 0.6
 
-    # compute height from that width
-    target_height = int(video_aspect * target_width * cell_aspect)
+    # adjust video aspect by cell shape
+    adjusted_aspect = video_aspect / cell_aspect
 
-    # but cap height
-    if target_height > max_lines:
-        target_height = max_lines
+    # initial attempt: fit width
+    target_width = width
+    target_height = int(target_width / adjusted_aspect)
 
+    # if too tall, fit height
+    if target_height > height:
+        target_height = height
+        target_width = int(target_height * adjusted_aspect)
+
+    # adjust for double_row and braille
     if mode == "half":
         target_height *= 2
-
-    if mode == "braille":
+    elif mode == "braille":
         target_height *= 4
 
-    # resize
+    # final resize
     pil = pil.resize((target_width, target_height), resample=resample)
 
+    # fix odd height for double row
     if double_row and pil.height % 2 != 0:
         pil = pil.crop((0, 0, pil.width, pil.height - 1))
 
@@ -513,9 +510,10 @@ def resize_frame(
 
 
 
+
 def render_half_block(img, char="▀"):
     lines = []
-    term_width, _ = shutil.get_terminal_size()
+    term_width, term_height = shutil.get_terminal_size()
     pad = (term_width - img.width) // 2 if term_width > img.width else 0
 
     for y in range(0, img.height - 1, 2):
@@ -586,6 +584,12 @@ def render_frame(
                             block[i] = img.getpixel((px, py))
                         i += 1
                 line += rgb_to_braille_block(block)
+
+            # pad it
+            img_width_chars = img.width
+            padding = max(0, (term_width - img_width_chars) // 2)
+            line = " " * padding + line
+
             lines.append(line)
         return "\n".join(lines)
 
@@ -614,6 +618,10 @@ def render_frame(
 
             else:
                 line += rgb_to_ansi_general(r, g, b, mode=mode, char=char, legacy=args.legacy)
+        # pad it
+        padding = max(0, (term_width - img.width) // 2)
+        line = " " * padding + line    
+    
         lines.append(line)
 
     return "\n".join(lines)
@@ -625,9 +633,13 @@ def get_subtitle_at(subtitles, current_time):
             return text
     return ""
 
-def parse_subtitle_html(text):
+import re
+from html import unescape
+
+def parse_subtitle_html(text, mode='color'):
     """
-    Convert some HTML tags to terminal escape sequences, and remove others
+    Convert simple HTML to ANSI escape sequences for terminal styling.
+    Supports <b>, <i>, <u> and <font color="#rrggbb">.
     """
     text = unescape(text)
 
@@ -652,10 +664,40 @@ def parse_subtitle_html(text):
     # Convert bold tags
     text = re.sub(r'<b>(.*?)</b>', bold_replacer, text, flags=re.IGNORECASE)
 
-    # Remove all other tags
-    text = re.sub(r'</?[^u][^>]*>', '', text)
+    # <font color="#rrggbb">
+    def font_color_replacer(match):
+        if not match.group(1).startswith('#'):
+            # if it doesn't start with #, assume it's a named color
+            # get css color
+            css_color = match.group(1).lower()
+            # webcolors.name_to_hex('salmon')  # '#fa8072'
+            try:
+                hex_color = webcolors.name_to_hex(css_color)
+            except ValueError:
+                # if not found, default to white
+                hex_color = '#ffffff'
+        else:
+
+            hex_color = match.group(1).lstrip('#')
+            if len(hex_color) == 3:
+                r, g, b = (int(hex_color[0]*2,16), int(hex_color[1]*2,16), int(hex_color[2]*2,16))
+            elif len(hex_color) == 6:
+                r, g, b = (int(hex_color[0:2],16), int(hex_color[2:4],16), int(hex_color[4:6],16))
+            else:
+                r, g, b = (255,255,255)
+
+            content = match.group(2)
+
+        return rgb_to_ansi_general(r, g, b, mode=mode, char=content)
+
+
+    text = re.sub(r'<font color=["\']?(#?[0-9a-fA-F]{3,6})["\']?>(.*?)</font>', font_color_replacer, text, flags=re.IGNORECASE)
+
+    # remove any other tags
+    text = re.sub(r'</?[^>]+>', '', text)
 
     return text.strip()
+
 
 ansi_escape_re = re.compile(r'\x1b\[[0-9;]*[mK]')
 
@@ -979,14 +1021,7 @@ def play_video(
                         tty.setcbreak(sys.stdin.fileno())
                 elif key_pressed == 's':
                     # Toggle subtitles
-                    if subtitle:
-                        subtitle = not subtitle
-                        if subtitle:
-                            print("\nSubtitles enabled.")
-                        else:
-                            print("\nSubtitles disabled.")
-                    else:
-                        print("\nNo subtitles loaded.")
+                    subtitle = not subtitle
                 elif key_pressed == 'p':
                     # Toggle progress bar
                     no_progress = not no_progress
@@ -1026,7 +1061,8 @@ def play_video(
                         mode = 'half'
                     elif mode == 'half':
                         mode = 'color'
-                
+                    else:
+                        mode = 'color'
                 elif key_pressed == 'd':
                     # Toggle dithering
                     dither = not dither
@@ -1050,6 +1086,23 @@ def play_video(
                         dither_diffusion = 'random'
                     elif dither_diffusion == 'random':
                         dither_diffusion = 'none'
+                    else:
+                        dither_diffusion = 'none'
+                elif key_pressed == 'x':
+                    if resample_filter == 'none':
+                        resample_filter = 'nearest'
+                    elif resample_filter == 'nearest':
+                        resample_filter = 'bilinear'
+                    elif resample_filter == 'bilinear':
+                        resample_filter = 'lanczos'
+                    elif resample_filter == 'lanczos':
+                        resample_filter = 'box'
+                    elif resample_filter == 'box':
+                        resample_filter = 'hamming'
+                    elif resample_filter == 'hamming':
+                        resample_filter = 'none'
+                    else:
+                        resample_filter = 'none'
                 elif key_pressed == 'm':
                     # Toggle Mute
                     
@@ -1089,6 +1142,13 @@ def play_video(
 
 
 
+
+            reserved_lines = 1  # safety margin
+            if not no_progress:
+                reserved_lines += 1
+            if subtitle:
+                reserved_lines += max_subtitle_lines + 2  # subtitle box
+
             # Cursor to line 2
             if not no_progress:
                 progress.refresh()
@@ -1097,16 +1157,6 @@ def play_video(
             else:
                 sys.stdout.write("\x1b[1;0H")
                 sys.stdout.flush()
-
-            term_width, term_height = shutil.get_terminal_size()
-
-            reserved_lines = 1  # safety margin
-            if not no_progress:
-                reserved_lines += 1
-            if subtitle:
-                reserved_lines += max_subtitle_lines + 2  # subtitle box
-
-            available_lines = max(1, term_height - reserved_lines)
 
             # adjust for half/braille
             if mode == "half":
@@ -1119,12 +1169,13 @@ def play_video(
             # Get terminal size
             if frame_index % 5 == 0:  # every 5 frames
                 term_width = shutil.get_terminal_size().columns
-                term_height = shutil.get_terminal_size().lines
+                term_height = shutil.get_terminal_size().lines - reserved_lines
 
             # Resize frame
             img = resize_frame(
                 frame,
                 width=term_width,  # ✅ use the passed --width value
+                height=term_height,
                 double_row=(mode == "half"),
                 resample=RESAMPLING_MAP[resample_filter],
                 mode=mode
@@ -1280,6 +1331,7 @@ CONTROLS:
   [Q]     Exit
   [R]     Reset video playback
   [U]     Toggle cursor
+  [X]     Cycle sampling mode
 
 """
 ,
